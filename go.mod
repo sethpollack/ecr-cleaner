@@ -3,12 +3,9 @@ module github.com/ltvco/ecr-cleaner
 go 1.21.4
 
 require (
-	github.com/aws/aws-sdk-go v1.48.7
-	github.com/aws/aws-sdk-go-v2 v1.23.5
 	github.com/aws/aws-sdk-go-v2/config v1.25.12
 	github.com/aws/aws-sdk-go-v2/service/ecr v1.24.3
 	github.com/rs/zerolog v1.31.0
-	github.com/sethpollack/ecr-cleaner v0.0.0-20180422155703-773c673bc438
 	github.com/spf13/cobra v1.8.0
 )
 
@@ -33,4 +30,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-require github.com/jmespath/go-jmespath v0.4.0 // indirect
+require (
+	github.com/aws/aws-sdk-go-v2 v1.23.5 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
+)
