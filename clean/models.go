@@ -3,15 +3,15 @@ package clean
 import "time"
 
 type ImageInfo struct {
-	LastPushed     time.Time
-	LastSeen       time.Time
-	Digest         string
-	RegistryUrl    string
-	RepositoryName string
-	DeployedTag    string
-	Tags           []string
-	Cluster        string
-	FullImagePath  string
+	LastPushed     time.Time `json:"last_pushed,omitempty"`
+	LastSeen       time.Time `json:"last_seen,omitempty"`
+	Digest         string    `json:"digest,omitempty"`
+	RegistryUrl    string    `json:"registry_url,omitempty"`
+	RepositoryName string    `json:"repository_name,omitempty"`
+	DeployedTag    string    `json:"deployed_tag,omitempty"`
+	Tags           []string  `json:"tags,omitempty"`
+	Cluster        string    `json:"cluster,omitempty"`
+	FullImagePath  string    `json:"full_image_path,omitempty"`
 }
 
 type PostBody struct {

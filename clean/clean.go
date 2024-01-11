@@ -6,34 +6,54 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/ecr"
 	"github.com/aws/aws-sdk-go-v2/service/ecr/types"
-	"github.com/rs/zerolog/log"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/rs/zerolog"
 )
+
+var log zerolog.Logger
+
+func init() {
+	var output io.Writer = zerolog.ConsoleWriter{
+		Out:        os.Stderr,
+		TimeFormat: time.RFC3339,
+		FormatLevel: func(i interface{}) string {
+			return strings.ToUpper(fmt.Sprintf("[%s]", i))
+		},
+		FormatMessage: func(i interface{}) string {
+			return fmt.Sprintf("| %s |", i)
+		},
+		// FormatCaller: func(i interface{}) string {
+		// 	return filepath.Base(fmt.Sprintf("%s", i))
+		// },
+		PartsExclude: []string{
+			zerolog.TimestampFieldName,
+		},
+	}
+	if os.Getenv("GO_ENV") != "development" {
+		output = os.Stderr
+	}
+	log = zerolog.New(output)
+}
 
 func CheckImageNotInUse(all []*ImageInfo, detail types.ImageDetail) bool {
 	for _, image := range all {
-		// _, err := json.MarshalIndent(image, "", "\t")
-		// if err != nil {
-		// 	log.Error().Err(err).Msg("failed to marshalIndent json")
-		// }
-		// deetsDigest := strings.Split(*detail.ImageDigest, ":")[1]
 		_, deetsDigest, _ := strings.Cut(*detail.ImageDigest, ":")
-		// fmt.Printf("deetsDigest: %v\n", deetsDigest)
-		// fmt.Printf("image.Digest: %v\n", image.Digest)
 		if deetsDigest == image.Digest {
-
-			// fmt.Printf("running image %v:%v pushed at %v\n", *deets.RepositoryName, deets.ImageTags, deets.ImagePushedAt)
 			return false
 		}
 	}
-
 	return true
 }
 
@@ -85,7 +105,6 @@ func GetPrometheusImagesFromProfile() ([]*ImageInfo, error) {
 	body := &Response{}
 	json.NewDecoder(resp.Body).Decode(body)
 	for _, item := range body.Results.A.Frames {
-
 		for _, field := range item.Schema.Fields {
 			if field.Labels.Name == "kube_pod_container_info" {
 				registryUrl := strings.Split(strings.Split(field.Labels.Image, "@")[0], ":")[0]
@@ -101,7 +120,6 @@ func GetPrometheusImagesFromProfile() ([]*ImageInfo, error) {
 					}
 					allImages = append(allImages, &newImage)
 				}
-
 			}
 		}
 	}
@@ -115,7 +133,8 @@ func GetECRImages(client *ecr.Client) ([]*ecr.DescribeImagesOutput, error) {
 		log.Error().Err(err).Msg("failed to describe registry")
 		return nil, err
 	}
-	fmt.Printf("repos.RegistryId: %v\n", *registry.RegistryId)
+	log.Debug().Str("awsAccount", *registry.RegistryId).Msg("AWS Account number to be scanned")
+	// fmt.Printf("repos.RegistryId: %v\n", *registry.RegistryId)
 	repos, err := client.DescribeRepositories(context.Background(), &ecr.DescribeRepositoriesInput{})
 	if err != nil {
 		log.Error().Err(err).Msg("failed to describe repositories")
@@ -123,18 +142,15 @@ func GetECRImages(client *ecr.Client) ([]*ecr.DescribeImagesOutput, error) {
 	}
 	for _, repo := range repos.Repositories {
 		if repo.RepositoryName != nil {
-
 			input := &ecr.ListImagesInput{
 				RepositoryName: repo.RepositoryName,
 			}
-
 			images, err := client.ListImages(context.Background(), input)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to list images")
 				return nil, err
 			}
 			if len(images.ImageIds) > 0 {
-
 				describe, err := client.DescribeImages(context.Background(), &ecr.DescribeImagesInput{
 					ImageIds:       images.ImageIds,
 					RepositoryName: repo.RepositoryName,
@@ -144,14 +160,14 @@ func GetECRImages(client *ecr.Client) ([]*ecr.DescribeImagesOutput, error) {
 					return nil, err
 				}
 				allECRImages = append(allECRImages, describe)
-
 			}
-
 		}
 	}
 	return allECRImages, nil
 }
+
 func GetECRImage(ctx context.Context, client *ecr.Client, image types.ImageDetail) error {
+	log.Debug().Str("imageRepositoryName", *image.RepositoryName).Msg("getting image from ECR")
 	data, err := client.BatchGetImage(ctx, &ecr.BatchGetImageInput{
 		ImageIds: []types.ImageIdentifier{{
 			ImageDigest: image.ImageDigest,
@@ -163,31 +179,17 @@ func GetECRImage(ctx context.Context, client *ecr.Client, image types.ImageDetai
 		log.Error().Err(err).Msg("failed to get image")
 		return err
 	}
-	// delete, err := client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{
-	// 	ImageIds: []types.ImageIdentifier{{
-	// 		ImageDigest: image.ImageDigest,
-	// 	}},
-	// 	RepositoryName: image.RepositoryName,
-	// 	RegistryId:     image.RegistryId,
-	// })
-	// if err != nil {
-	// 	log.Error().Err(err).Str("repoName", *image.RepositoryName).Str("imageDigest", *image.ImageDigest).Msg("failed to delete image")
-	// }
-	// for _, ii := range delete.ImageIds {
-	// 	fmt.Printf("ii.ImageDigest: %v\n", ii.ImageDigest)
-	// }
-	for _, i2 := range data.Images {
-
-		if i2.ImageId.ImageTag != nil {
-			// fmt.Printf("RepoName:ImageDigest and tags: %v:%v %v\n", *i2.RepositoryName, *i2.ImageId.ImageDigest, *i2.ImageId.ImageTag)
-			continue
-		}
-		// fmt.Printf("RepoName:Digest: %v:%v\n", *i2.RepositoryName, *i2.ImageId.ImageDigest)
+	for _, v := range data.Images {
+		log.Info().Interface("imageDetails", v).Msg("GetECRImage details")
 	}
 	return nil
 }
 
-func DeleteECRImage(ctx context.Context, client *ecr.Client, image types.ImageDetail) error {
+func DeleteECRImage(ctx context.Context, client *ecr.Client, image types.ImageDetail, dryRun bool) error {
+	if dryRun {
+		log.Info().Interface("imageDetail", image).Msg("dry run of delete image")
+		return nil
+	}
 	delete, err := client.BatchDeleteImage(ctx, &ecr.BatchDeleteImageInput{
 		ImageIds: []types.ImageIdentifier{{
 			ImageDigest: image.ImageDigest,
@@ -200,14 +202,9 @@ func DeleteECRImage(ctx context.Context, client *ecr.Client, image types.ImageDe
 		return err
 	}
 	for _, ii := range delete.ImageIds {
-		fmt.Printf("ImageDigest and tags deleted: %v,\n", ii.ImageDigest)
+		log.Info().Interface("deletedImage", ii).Msg("deleted image")
+		// fmt.Printf("ImageDigest and tags deleted: %v,\n", ii.ImageDigest)
 	}
-	// for _, i2 := range data.Images {
-	// 	fmt.Printf("i2.RepositoryName: %v\n", *i2.RepositoryName)
-	// 	if i2.ImageId.ImageTag != nil {
-	// 		fmt.Printf("i2.ImageId.ImageTag: %v\n", *i2.ImageId.ImageTag)
-	// 	}
-	// }
 	return nil
 }
 
@@ -228,15 +225,21 @@ func GetUnique(all []*ImageInfo) []*ImageInfo {
 	return unique
 }
 
-func CleanRepos(untaggedOnly bool, keepLastCount int, profile string, region string, dryRun bool) bool {
-	// fmt.Printf("Cleaning %v profile of following images: \n\tUntagged Only: %v\n\tKeeping Last: %v\n\tDry Run: %v\n", profile, untaggedOnly, keepLastCount, dryRun)
-	log.Info().Bool("untaggedOnly", untaggedOnly).Bool("dryRun", dryRun).Int("keepLastCount", keepLastCount).Str("profile", profile).Msg("starting ecr-cleanup process")
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region), config.WithSharedConfigProfile(profile))
+func CleanRepos(untaggedOnly bool, keepLastCount int, profile string, region string, dryRun bool, verbose bool) bool {
+	arnmap := map[string]string{
+		"development": "arn:aws:iam::722014088219:role/devops-read-only",
+		"production":  "arn:aws:iam::667347940230:role/devops-read-only",
+	}
+	log.Info().Bool("untaggedOnly", untaggedOnly).Bool("dryRun", dryRun).Int("keepLastCount", keepLastCount).Str("profile", profile).Bool("verbose", verbose).Str("region", region).Msg("starting ecr-cleanup process")
+	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
 	if err != nil {
 		log.Fatal().Err(err).Msg("unable to load SDK config")
 	}
-	client := ecr.NewFromConfig(cfg)
+	stsSvc := sts.NewFromConfig(cfg)
+	stsCred := stscreds.NewAssumeRoleProvider(stsSvc, arnmap[profile])
 
+	cfg.Credentials = aws.NewCredentialsCache(stsCred)
+	client := ecr.NewFromConfig(cfg)
 	allImages, err := GetPrometheusImagesFromProfile()
 	if err != nil {
 		log.Error().Err(err).Msg("failed to get prometheus images")
@@ -286,13 +289,12 @@ func CleanRepos(untaggedOnly bool, keepLastCount int, profile string, region str
 		for _, deet := range unt.ImageDetails {
 			if deet.ImageDigest != nil {
 				if CheckImageNotInUse(allImages, deet) {
-					if dryRun {
+					DeleteECRImage(context.Background(), client, deet, dryRun)
+					if verbose {
 						GetECRImage(context.Background(), client, deet)
-						continue
 					}
-					DeleteECRImage(context.Background(), client, deet)
 				} else {
-					fmt.Printf("*****Can't delete %v: %v because it is in use!!!!\n", *deet.RepositoryName, *deet.ImageDigest)
+					// fmt.Printf("*****Can't delete %v: %v because it is in use!!!!\n", *deet.RepositoryName, *deet.ImageDigest)
 					log.Warn().Interface("details of image", deet).Msg("can't delete because image is in use")
 					noDelete.ImageDetails = append(noDelete.ImageDetails, deet)
 
@@ -309,22 +311,29 @@ func CleanRepos(untaggedOnly bool, keepLastCount int, profile string, region str
 	// 	}
 	// }
 
-	fmt.Printf("number of repos: %v\n", len(keepers))
+	log.Debug().Int("numberRepos", len(keepers)).Msg("number of repositories scanned")
+	// fmt.Printf("number of repos: %v\n", len(keepers))
 	count := 0
 	count2 := 0
 	for _, dio := range keepers {
 		count += len(dio.ImageDetails)
 
 	}
-	fmt.Printf("keeper images count: %v\n", count)
+	log.Info().Int("keepImagesCount", count).Msg("number of images to keep")
+	// fmt.Printf("keeper images count: %v\n", count)
 	for _, dio := range removeUntagged {
 		count2 += len(dio.ImageDetails)
 	}
-	fmt.Printf("removeUntagged images count: %v\n", count2)
-	fmt.Printf("cantDelete: %v\n", len(cantDelete))
+	log.Info().Int("removedImagesCount", count2).Msg("total number of images removed")
+	// fmt.Printf("removeUntagged images count: %v\n", count2)
+	if len(cantDelete) > 0 {
+		log.Info().Int("cannotDelete", len(cantDelete)).Msg("number of images that cannot be deleted due to being in use")
+	}
+	// fmt.Printf("cantDelete: %v\n", len(cantDelete))
 	for _, k := range cantDelete {
 		for _, v := range k.ImageDetails {
-			fmt.Printf("Currently in use: %v:%v Tags:%v Pushed At: %v \n", *v.RepositoryName, *v.ImageDigest, v.ImageTags, v.ImagePushedAt)
+			log.Info().Interface("cannotDeleteImage", v).Msg("image cannot be deleted")
+			// fmt.Printf("Currently in use: %v:%v Tags:%v Pushed At: %v \n", *v.RepositoryName, *v.ImageDigest, v.ImageTags, v.ImagePushedAt)
 		}
 	}
 	return false
